@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch.optim as optim
@@ -15,35 +16,44 @@ transform = transforms.ToTensor()
 train_dataset = datasets.MNIST(root='./data', train=True, transform=transform, download=True)
 test_dataset = datasets.MNIST(root='./data', train=False, transform=transform)
 
-train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)  # batch size 8 per paper
+test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
-# ---- Step 2: Define a Simple Model ---- #
+
+# ---- Helper: One-hot encode targets ---- #
+def to_one_hot(labels, num_classes=10):
+    return F.one_hot(labels, num_classes).float()
+
+
+# ---- Step 2: Define the Model (Fully-connected vanilla NN with sigmoid hidden layers, NO sigmoid output) ---- #
 class SimpleNN(nn.Module):
     def __init__(self):
         super().__init__()
         self.fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(28*28, 128),
-            nn.ReLU(),
-            nn.Linear(128, 10)
+            nn.Linear(28*28, 256),
+            nn.Sigmoid(),
+            nn.Linear(256, 112),
+            nn.Sigmoid(),
+            nn.Linear(112, 10)  # NO sigmoid here
         )
 
     def forward(self, x):
         return self.fc(x)
 
+
 # ---- Step 3: Define Optimizers to Compare ---- #
 optimizers_dict = {
     "Vanilla": lambda model: optim.SGD(model.parameters(), lr=0.01),
     "AdaGrad": lambda model: optim.Adagrad(model.parameters(), lr=0.01),
-    "AdaDelta": lambda model: optim.Adadelta(model.parameters(), lr=1.0),
-    "AG-SGD (Paper Proposed)": lambda model: AGSGD(model.parameters(), lr=0.001, s=1.2, d=0.95, iter_decay=10),
-    "Our Proposed": lambda model: OurProposedSGD(model.parameters(), lr=0.001, s=1.2, d=0.95, iter_decay=10)
+    "AdaDelta": lambda model: optim.Adadelta(model.parameters(), lr=0.01),
+    "AG-SGD (Paper Proposed)": lambda model: AGSGD(model.parameters(), lr=0.01, s=1.2, d=0.95, iter_decay=10),
+    "Non-Linear AG-SGD": lambda model: OurProposedSGD(model.parameters(), lr=0.01, s=1.2, d=0.95, iter_decay=10)
 }
 
 # ---- Step 4: Training + Testing Loop ---- #
-results = {}  # To hold 50 test costs per optimizer
-criterion = nn.CrossEntropyLoss()
+results = {}  # To hold 50 test costs per optimizerSS
+criterion = nn.MSELoss()
 
 for opt_name, opt_fn in optimizers_dict.items():
     print(f"\nTraining with {opt_name}...")
@@ -56,7 +66,8 @@ for opt_name, opt_fn in optimizers_dict.items():
         for x_batch, y_batch in train_loader:
             optimizer.zero_grad()
             output = model(x_batch)
-            loss = criterion(output, y_batch)
+            y_batch_onehot = to_one_hot(y_batch, 10)
+            loss = criterion(output, y_batch_onehot)
             loss.backward()
             optimizer.step()
 
@@ -66,19 +77,22 @@ for opt_name, opt_fn in optimizers_dict.items():
         with torch.no_grad():
             for x_test, y_test in test_loader:
                 output = model(x_test)
-                loss = criterion(output, y_test)
+                y_test_onehot = to_one_hot(y_test, 10)
+                loss = criterion(output, y_test_onehot)
                 test_loss += loss.item()
         avg_test_loss = test_loss / len(test_loader)
         test_costs.append(avg_test_loss)
-        print(f"Epoch {epoch+1}: Test Cost = {avg_test_loss:.4f}")
+        print(f"Epoch {epoch+1}: Test Cost = {avg_test_loss:.6f}")
 
     results[opt_name] = test_costs
 
+
 # ---- Step 5: Save Results ---- #
 df = pd.DataFrame(results)
-df.index.name = "Iteration"
+df.index.name = "Epoch"
 df.to_csv("test_costs_per_optimizer.csv")
 print("\nSaved test costs to 'test_costs_per_optimizer.csv'.")
+
 
 # ---- Step 6: Extract 5 Minimal Costs and Save Stats ---- #
 stats = []
@@ -94,10 +108,8 @@ stats_df = pd.DataFrame(stats, columns=columns)
 stats_df.to_csv("minimal_cost_stats.csv", index=False)
 print("\nSaved 5 minimal cost stats to 'minimal_cost_stats.csv'.")
 
-# ---- Step 7: Plot Graphs ---- #
-import matplotlib.pyplot as plt
-import seaborn as sns
 
+# ---- Step 7: Plot Graphs ---- #
 plt.figure(figsize=(12, 6))
 for col in df.columns:
     plt.plot(df.index, np.array(df[col]) * 10000, label=col, marker='o', markersize=2)
